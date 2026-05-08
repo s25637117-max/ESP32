@@ -1,454 +1,92 @@
-/**
- * Home.tsx — ESP32 MQTT 控制面板主頁
- * Design: Industrial HMI Dark Theme
- * - Deep navy-black background with electric cyan accents
- * - LED glow indicators, terminal-style log, industrial control panels
- * - Fonts: Rajdhani (titles) + JetBrains Mono (data)
- */
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ESP32 MQTT 控制面板</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; margin-top: 50px; }
+        button { padding: 15px 30px; font-size: 20px; cursor: pointer; margin: 10px; }
+        .status { font-size: 24px; font-weight: bold; color: #333; margin-top: 20px; }
+    </style>
+</head>
+<body>
 
-import { useEffect, useRef, useState } from "react";
-import { DEFAULT_CONFIG, useMQTT, type MQTTConfig } from "@/hooks/useMQTT";
-import { toast } from "sonner";
-
-// Status badge component
-function StatusBadge({ status }: { status: string }) {
-  const configs = {
-    connected: {
-      label: "已連線",
-      ledClass: "led-connected animate-pulse-green",
-      textClass: "text-green-neon",
-      borderClass: "border-green-neon",
-    },
-    connecting: {
-      label: "連線中",
-      ledClass: "led-connecting",
-      textClass: "text-gold",
-      borderClass: "border-gold",
-    },
-    disconnected: {
-      label: "未連線",
-      ledClass: "led-disconnected",
-      textClass: "text-red-alert",
-      borderClass: "border-red-alert",
-    },
-    error: {
-      label: "連線錯誤",
-      ledClass: "led-disconnected",
-      textClass: "text-red-alert",
-      borderClass: "border-red-alert",
-    },
-  };
-
-  const cfg = configs[status as keyof typeof configs] ?? configs.disconnected;
-
-  return (
-    <div
-      className={`flex items-center gap-2 px-3 py-1.5 rounded border ${cfg.borderClass} bg-black/30`}
-    >
-      <div className={`w-2.5 h-2.5 rounded-full ${cfg.ledClass}`} />
-      <span
-        className={`text-xs font-mono font-semibold tracking-widest uppercase ${cfg.textClass}`}
-      >
-        {cfg.label}
-      </span>
+    <h1>ESP32 遠端控制</h1>
+    
+    <div>
+        <h3>控制 ESP32 LED</h3>
+        <button onclick="sendLedCommand('ON')">打開 LED</button>
+        <button onclick="sendLedCommand('OFF')">關閉 LED</button>
     </div>
-  );
-}
 
-// Log entry row
-function LogRow({
-  entry,
-  index,
-}: {
-  entry: { id: string; timestamp: Date; type: string; message: string };
-  index: number;
-}) {
-  const typeStyles: Record<string, string> = {
-    info: "text-cyan",
-    success: "text-green-neon",
-    error: "text-red-alert",
-    warning: "text-gold",
-    received: "text-[#c084fc]",
-    sent: "text-[#34d399]",
-  };
-
-  const typePrefixes: Record<string, string> = {
-    info: "[INFO]",
-    success: "[OK]",
-    error: "[ERR]",
-    warning: "[WARN]",
-    received: "[RX]",
-    sent: "[TX]",
-  };
-
-  const colorClass = typeStyles[entry.type] ?? "text-foreground";
-  const prefix = typePrefixes[entry.type] ?? "[LOG]";
-
-  const ts = entry.timestamp;
-  const timeStr = `${ts.getHours().toString().padStart(2, "0")}:${ts
-    .getMinutes()
-    .toString()
-    .padStart(2, "0")}:${ts.getSeconds().toString().padStart(2, "0")}.${ts
-    .getMilliseconds()
-    .toString()
-    .padStart(3, "0")}`;
-
-  return (
-    <div
-      className="flex gap-2 text-xs font-mono py-0.5 animate-fade-in-up"
-      style={{ animationDelay: `${index * 20}ms` }}
-    >
-      <span className="text-muted-foreground shrink-0 select-none">{timeStr}</span>
-      <span className={`shrink-0 font-semibold ${colorClass}`}>{prefix}</span>
-      <span className="text-foreground/80 break-all">{entry.message}</span>
+    <div>
+        <h3>ESP32 實體按鈕狀態</h3>
+        <div class="status" id="buttonStatus">等待狀態更新...</div>
     </div>
-  );
-}
 
-// Settings modal
-function SettingsModal({
-  config,
-  onSave,
-  onClose,
-}: {
-  config: MQTTConfig;
-  onSave: (c: MQTTConfig) => void;
-  onClose: () => void;
-}) {
-  const [form, setForm] = useState(config);
+    <script>
+        // MQTT 伺服器設定 (使用 EMQX 公共伺服器)
+        const broker = "broker.emqx.io";
+        const port = 8084; // 8084 是 WSS (WebSocket Secure) 加密通訊埠
+        const clientId = "web_client_" + Math.random().toString(16).substr(2, 8);
+        
+        // 定義通訊主題 (Topic)
+        const topicLedControl = "myGO/esp32/led";
+        const topicButtonStatus = "myGO/esp32/button";
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-      <div className="hmi-panel corner-tl corner-br rounded-lg p-6 w-full max-w-md mx-4 animate-fade-in-up">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-bold text-cyan tracking-widest uppercase">
-            MQTT 設定
-          </h2>
-          <button
-            onClick={onClose}
-            className="text-muted-foreground hover:text-cyan transition-colors text-xl leading-none"
-          >
-            ✕
-          </button>
-        </div>
+        // 建立 MQTT 客戶端
+        const client = new Paho.MQTT.Client(broker, port, clientId);
 
-        <div className="space-y-4">
-          {[
-            { label: "Broker 伺服器", key: "broker", type: "text" },
-            { label: "連接埠 (WSS)", key: "port", type: "number" },
-            { label: "LED 控制主題", key: "topicLedControl", type: "text" },
-            { label: "按鈕狀態主題", key: "topicButtonStatus", type: "text" },
-          ].map(({ label, key, type }) => (
-            <div key={key}>
-              <label className="block text-xs text-muted-foreground mb-1 uppercase tracking-widest">
-                {label}
-              </label>
-              <input
-                type={type}
-                value={String(form[key as keyof MQTTConfig])}
-                onChange={(e) =>
-                  setForm((prev) => ({
-                    ...prev,
-                    [key]: type === "number" ? Number(e.target.value) : e.target.value,
-                  }))
-                }
-                className="w-full bg-black/40 border border-cyan/20 rounded px-3 py-2 text-sm font-mono text-foreground focus:outline-none focus:border-cyan/60 transition-colors"
-              />
-            </div>
-          ))}
-        </div>
+        client.onConnectionLost = onConnectionLost;
+        client.onMessageArrived = onMessageArrived;
 
-        <div className="flex gap-3 mt-6">
-          <button
-            onClick={() => {
-              onSave(form);
-              onClose();
-            }}
-            className="btn-cyan flex-1 py-2.5 rounded text-sm"
-          >
-            儲存並重新連線
-          </button>
-          <button
-            onClick={onClose}
-            className="btn-red flex-1 py-2.5 rounded text-sm"
-          >
-            取消
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
+        // 連線設定 (啟用 SSL)
+        const options = {
+            useSSL: true, // 關鍵：啟用 WSS 加密連線
+            timeout: 3,
+            onSuccess: onConnect,
+            onFailure: onFailure
+        };
 
-export default function Home() {
-  const [config, setConfig] = useState<MQTTConfig>(DEFAULT_CONFIG);
-  const [showSettings, setShowSettings] = useState(false);
-  const logsEndRef = useRef<HTMLDivElement>(null);
+        console.log("正在連線到 MQTT 伺服器...");
+        client.connect(options);
 
-  const {
-    status,
-    buttonStatus,
-    ledState,
-    logs,
-    clientId,
-    connect,
-    disconnect,
-    sendLedCommand,
-    clearLogs,
-    isConnected,
-  } = useMQTT(config);
+        function onConnect() {
+            console.log("MQTT 連線成功！(已加密)");
+            // 訂閱 ESP32 按鈕狀態主題
+            client.subscribe(topicButtonStatus);
+        }
 
-  // Auto-scroll logs
-  useEffect(() => {
-    logsEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [logs]);
+        function onFailure(message) {
+            console.error("連線失敗: " + message.errorMessage);
+        }
 
-  const handleLedCommand = (state: "ON" | "OFF") => {
-    const ok = sendLedCommand(state);
-    if (ok) {
-      toast.success(`LED 指令已發送: ${state}`, { duration: 2000 });
-    } else {
-      toast.error("發送失敗，請確認 MQTT 連線狀態");
-    }
-  };
+        function onConnectionLost(responseObject) {
+            if (responseObject.errorCode !== 0) {
+                console.warn("連線中斷: " + responseObject.errorMessage);
+            }
+        }
 
-  const handleSaveConfig = (newConfig: MQTTConfig) => {
-    setConfig(newConfig);
-    disconnect();
-    setTimeout(() => connect(), 300);
-    toast.info("設定已更新，重新連線中...");
-  };
+        // 接收到 MQTT 訊息時觸發
+        function onMessageArrived(message) {
+            if (message.destinationName === topicButtonStatus) {
+                document.getElementById("buttonStatus").innerText = "按鈕狀態: " + message.payloadString;
+            }
+        }
 
-  const now = new Date();
-  const dateStr = now.toLocaleDateString("zh-TW", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  });
-  const timeStr = now.toLocaleTimeString("zh-TW", { hour12: false });
-
-  return (
-    <div
-      className="min-h-screen relative overflow-hidden"
-      style={{
-        background: "oklch(0.10 0.015 240)",
-      }}
-    >
-      {/* Background image */}
-      <div
-        className="absolute inset-0 bg-cover bg-center opacity-15"
-        style={{
-          backgroundImage: `url(https://d2xsxph8kpxj0f.cloudfront.net/310519663639436596/R2nfTJBm6cXXwXHd36RTY5/hero-bg-fvoJcEpwfcP9MrnFMjgmQe.webp)`,
-        }}
-      />
-      {/* Scanlines overlay */}
-      <div
-        className="absolute inset-0 pointer-events-none"
-        style={{
-          background:
-            "repeating-linear-gradient(0deg, transparent, transparent 2px, rgba(0,212,255,0.012) 2px, rgba(0,212,255,0.012) 4px)",
-          zIndex: 1,
-        }}
-      />
-
-      {/* Content */}
-      <div className="relative z-10 flex flex-col min-h-screen">
-        {/* ── Header ── */}
-        <header className="border-b border-cyan/20 bg-black/40 backdrop-blur-md">
-          <div className="container flex items-center justify-between py-3">
-            {/* Logo + Title */}
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded border border-cyan/40 flex items-center justify-center">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  className="w-5 h-5 text-cyan"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                >
-                  <rect x="3" y="6" width="18" height="12" rx="1" />
-                  <path d="M7 10h2M7 14h2M15 10h2M15 14h2M11 9v6" />
-                  <circle cx="12" cy="12" r="1.5" fill="currentColor" />
-                </svg>
-              </div>
-              <div>
-                <h1 className="text-lg font-bold text-cyan tracking-widest uppercase leading-none">
-                  ESP32 MQTT
-                </h1>
-                <p className="text-[10px] text-muted-foreground tracking-widest uppercase">
-                  遠端控制面板
-                </p>
-              </div>
-            </div>
-
-            {/* Status + Actions */}
-            <div className="flex items-center gap-3">
-              <div className="hidden sm:flex items-center gap-2 text-xs text-muted-foreground font-mono">
-                <span>{dateStr}</span>
-                <span className="text-cyan/40">|</span>
-                <LiveClock />
-              </div>
-              <StatusBadge status={status} />
-              <button
-                onClick={() => setShowSettings(true)}
-                className="btn-cyan px-3 py-1.5 rounded text-xs"
-                title="MQTT 設定"
-              >
-                ⚙
-              </button>
-            </div>
-          </div>
-        </header>
-
-        {/* ── Main Grid ── */}
-        <main className="container flex-1 py-6">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-            {/* ── Left Column: Connection + Info ── */}
-            <div className="space-y-5">
-              {/* Connection Panel */}
-              <div className="hmi-panel corner-tl corner-br rounded-lg p-5">
-                <h3 className="text-xs text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <span className="w-1 h-3 bg-cyan inline-block rounded" />
-                  連線管理
-                </h3>
-
-                <div className="space-y-3 text-xs font-mono">
-                  {[
-                    { label: "BROKER", value: config.broker },
-                    { label: "PORT", value: `${config.port} (WSS)` },
-                    { label: "CLIENT ID", value: clientId },
-                    { label: "PROTOCOL", value: "MQTT over WSS" },
-                    { label: "ENCRYPTION", value: "TLS/SSL ✓" },
-                  ].map(({ label, value }) => (
-                    <div key={label} className="flex justify-between gap-2">
-                      <span className="text-muted-foreground shrink-0">{label}</span>
-                      <span className="text-cyan text-right truncate">{value}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-4 pt-4 border-t border-cyan/10 flex gap-2">
-                  {status === "disconnected" || status === "error" ? (
-                    <button
-                      onClick={connect}
-                      className="btn-cyan flex-1 py-2 rounded text-xs"
-                    >
-                      連線
-                    </button>
-                  ) : status === "connecting" ? (
-                    <button disabled className="btn-cyan flex-1 py-2 rounded text-xs opacity-50 cursor-not-allowed">
-                      <span className="inline-block animate-connecting mr-1">⟳</span>
-                      連線中...
-                    </button>
-                  ) : (
-                    <button
-                      onClick={disconnect}
-                      className="btn-red flex-1 py-2 rounded text-xs"
-                    >
-                      中斷連線
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Topics Panel */}
-              <div className="hmi-panel corner-tl corner-br rounded-lg p-5">
-                <h3 className="text-xs text-muted-foreground uppercase tracking-widest mb-4 flex items-center gap-2">
-                  <span className="w-1 h-3 bg-cyan inline-block rounded" />
-                  MQTT 主題
-                </h3>
-                <div className="space-y-3">
-                  <div className="rounded border border-cyan/15 p-3 bg-black/30">
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-widest mb-1">
-                      發布 (Publish)
-                    </div>
-                    <div className="text-xs font-mono text-gold break-all">
-                      {config.topicLedControl}
-                    </div>
-                  </div>
-                  <div className="rounded border border-cyan/15 p-3 bg-black/30">
-                    <div className="text-[10px] text-muted-foreground uppercase tracking-widest mb-1">
-                      訂閱 (Subscribe)
-                    </div>
-                    <div className="text-xs font-mono text-[#c084fc] break-all">
-                      {config.topicButtonStatus}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* ESP32 Chip Image */}
-              <div className="hmi-panel rounded-lg overflow-hidden">
-                <img
-                  src="https://d2xsxph8kpxj0f.cloudfront.net/310519663639436596/R2nfTJBm6cXXwXHd36RTY5/esp32-chip-7NWJFjMTaDgpqsYbjQFnpy.webp"
-                  alt="ESP32 Chip"
-                  className="w-full h-36 object-cover opacity-70"
-                />
-                <div className="px-4 py-2 text-center">
-                  <span className="text-[10px] text-muted-foreground uppercase tracking-widest">
-                    ESP32 — Espressif Systems
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* ── Center Column: Controls ── */}
-            <div className="space-y-5">
-              {/* LED Control Panel */}
-              <div className="hmi-panel corner-tl corner-br rounded-lg p-6">
-                <h3 className="text-xs text-muted-foreground uppercase tracking-widest mb-6 flex items-center gap-2">
-                  <span className="w-1 h-3 bg-gold inline-block rounded" />
-                  LED 控制
-                </h3>
-
-                {/* LED Visual Indicator */}
-                <div className="flex flex-col items-center mb-8">
-                  <div className="relative">
-                    <div
-                      className={`w-20 h-20 rounded-full border-2 flex items-center justify-center transition-all duration-500 ${
-                        ledState === "ON"
-                          ? "led-on border-gold"
-                          : ledState === "OFF"
-                          ? "led-off border-gray-600"
-                          : "border-gray-700 bg-gray-800"
-                      }`}
-                    >
-                      <svg
-                        viewBox="0 0 24 24"
-                        className={`w-10 h-10 transition-all duration-500 ${
-                          ledState === "ON" ? "text-gray-900" : "text-gray-600"
-                        }`}
-                        fill="currentColor"
-                      >
-                        <path d="M12 2a7 7 0 0 1 7 7c0 2.38-1.19 4.47-3 5.74V17a1 1 0 0 1-1 1H9a1 1 0 0 1-1-1v-2.26C6.19 13.47 5 11.38 5 9a7 7 0 0 1 7-7zm-1 18h2v1a1 1 0 0 1-2 0v-1z" />
-                      </svg>
-                    </div>
-                    {ledState === "ON" && (
-                      <div className="absolute inset-0 rounded-full animate-ping opacity-20 bg-gold" />
-                    )}
-                  </div>
-                  <div className="mt-3 text-center">
-                    <div
-                      className={`text-2xl font-bold tracking-widest uppercase ${
-                        ledState === "ON"
-                          ? "text-gold"
-                          : ledState === "OFF"
-                          ? "text-muted-foreground"
-                          : "text-muted-foreground/50"
-                      }`}
-                    >
-                      {ledState ?? "---"}
-                    </div>
-                    <div className="text-xs text-muted-foreground mt-0.5">
-                      目前 LED 狀態
-                    </div>
-                  </div>
-                </div>
-
-                {/* Control Buttons */}
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    onClick={() => handleLedCommand("ON")}
-                    disabled={!isConnected}
-                    cl
-(Content truncated due to size limit. Use line ranges to read remaining content)
+        // 發送控制 LED 的指令
+        function sendLedCommand(state) {
+            if (client.isConnected()) {
+                const message = new Paho.MQTT.Message(state);
+                message.destinationName = topicLedControl;
+                client.send(message);
+                console.log("已發送指令: " + state);
+            } else {
+                alert("尚未連線到 MQTT 伺服器");
+            }
+        }
+    </script>
+</body>
+</html>
