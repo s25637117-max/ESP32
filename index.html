@@ -33,8 +33,8 @@
         const clientId = "web_client_" + Math.random().toString(16).substr(2, 8);
         
         // 定義通訊主題 (Topic)
-        const topicLedControl = "myhome/esp32/led";
-        const topicButtonStatus = "myhome/esp32/button";
+        const topicLedControl = "myGO/esp32/led";
+        const topicButtonStatus = "myGO/esp32/button";
 
         // 建立 MQTT 客戶端
         const client = new Paho.MQTT.Client(broker, port, clientId);
